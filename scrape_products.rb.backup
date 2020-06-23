@@ -1,0 +1,235 @@
+# Author: Marcelo Dias
+# Last modified: 23/06/2020
+
+# REQUIREMENTS -----------------------------------
+load    "product.rb"
+require "mechanize.rb"
+require "nokogiri.rb"
+require "byebug"
+require "i18n"
+
+# ------------------------------------------------
+
+# PROBLEM SOLVING FUNCTIONS ----------------------
+def format_text name
+	return I18n.transliterate(name).gsub(/[\-\(\)\'\/\\\?\!\@\#\$\%\&]/, '').gsub(/\s+/, ' ').gsub(' ', '_').downcase
+end
+
+def get_categories_urls initial_page
+	images_partial_urls = initial_page.body.scan(/\/categoria[^\"]+/).uniq
+
+	total_categories_number = images_partial_urls.size
+
+	categories_urls = []
+
+	for i in 0..(total_categories_number - 1)
+		categories_urls << base_url() + images_partial_urls[i]
+	end
+
+	return categories_urls, total_categories_number
+end
+
+def there_are_still_more_pages flag, current_page_number
+	if flag == nil
+		return false
+	end
+
+	return true
+end
+
+def theres_a_product text
+	if text == 'Visualização rápida'
+		return true
+	end
+
+	return false
+end
+
+# ------------------------------------------------
+
+# SAVING FUNCTIONS -------------------------------
+def download_image(url, path)
+  image = @ag.get(url).body
+
+  file = File.open(path, "w") { |f| f << image }
+
+  file.close()
+
+  return image
+end
+
+def save_page page, path
+	file = File.new(path, 'w')
+	file.puts page.body.unpack('C*').pack('U*')
+	file.close
+end
+
+def save_file path, content
+	file = File.open(path, "w") { |f| f << content }
+
+	file.close()
+end
+
+# ------------------------------------------------
+
+# URL FUNCTIONS ----------------------------------
+def base_url
+	return 'https://www.cupidodistribuidora.com.br'
+end
+
+# ------------------------------------------------
+
+# PATH FUNCTIONS ---------------------------------
+def file_path file_name
+	return `pwd`.chomp + '/../cupido/' + file_name
+end
+
+# ------------------------------------------------
+
+# PRINTING FUNCTIONS -----------------------------
+def log message
+	puts '-' * 99
+	puts message
+	puts '-' * 99
+end
+
+def print_page_number page_number
+	log "PÁGINA #{page_number}"
+end
+
+# ------------------------------------------------
+
+# SETTINGS ---------------------------------------
+# Requeried by the transliterate method 
+# (which deletes the accents of a given word)
+I18n.config.available_locales = :en
+
+# ------------------------------------------------
+
+@ag = Mechanize.new()
+
+# Makes a directory (cupido_sexshop_crawler's sibling) called "cupido"
+system('mkdir ../cupido')
+
+initial_page_url = base_url() + '/index.html'
+
+log 'REQUISITANDO PÁGINA INICIAL'
+initial_page = @ag.get(initial_page_url)
+log 'PRONTO'
+
+# Gets the urls for all categories
+categories_urls, total_categories_number = get_categories_urls(initial_page)
+
+for i in 0..(total_categories_number - 1)
+	# Gets the current category name
+	category = categories_urls[i].match(/categoria,\d+,([^\.]+)/)[1].gsub(/-/, ' ')
+
+	log "CATEGORIA #{category.upcase} (#{(i + 1).to_s} de #{total_categories_number})"
+
+	# Makes a directory with the formatted current category name
+	system("mkdir ../cupido/#{format_text(category)}")
+
+	# Accesses the current category page
+	category_page = @ag.get(categories_urls[i])
+
+	current_page_number = 1
+
+	loop do
+		print_page_number(current_page_number)
+
+		# Gets the total number of links in the current category page
+		number_of_links = category_page.links.size
+
+		for j in 0..(number_of_links - 1)
+			# Checks if the current link in the current category is associated with an existing product
+			if theres_a_product(category_page.links[j].text)
+				product = Product.new(category)
+
+				product.name = category_page.links[j - 1].text
+
+				# Creates a folder for the current product
+				system("mkdir ../cupido/#{format_text(product.category)}/#{format_text(product.name)}")
+
+				# This product id is necessary only for composing its respective url.
+				product_id = category_page.links[j - 1].attributes.attributes.first.last.text.match('\d+')[0]
+
+				product_url = base_url() + "/Produto/Popup/#{product_id}?X-Requested-With=XMLHttpRequest&_=1590637275001"
+
+				product_page = @ag.get(product_url)
+
+				# Just for investigating purposes
+				save_page(product_page, file_path('page.html'))
+
+				images_partial_urls = product_page.body.scan(/\/uploads\/\d+[^"]+/).uniq
+
+				total_images_number = images_partial_urls.size
+
+				if total_images_number == 1
+					image_path = file_path("#{format_text(product.category)}/#{format_text(product.name)}/imagem.jpg")
+
+					image_url = base_url() + images_partial_urls.first
+
+					product.images << download_image(image_url, image_path)
+				elsif total_images_number > 1
+					for k in 0..(total_images_number - 1)
+						image_path = file_path("#{format_text(product.category)}/#{format_text(product.name)}/imagem#{(k + 1).to_s}.jpg")
+
+					 	image_url = base_url() + images_partial_urls[k]
+
+					 	product.images << download_image(image_url, image_path)
+					end
+				end
+
+				product_page = Nokogiri::HTML(product_page.body, nil, Encoding::UTF_8.to_s)
+
+				short_cut = product_page.children.last.children.children[2].text
+
+				product.cash_price = short_cut.gsub(/\s+/, '').match(/(R\$\d+,\d{2})àvista/)[1].gsub(/,/, '.')
+
+				product.credit_card_price = short_cut.gsub(/\s+/, '').match(/(R\$\d+,\d{2})noscartõesdecrédito/)[1].gsub(/,/, '.')
+
+				product.description = product_page.css("#desc").text.strip
+
+				if product.description.empty?
+					product_url = base_url() + category_page.links[j - 1].attributes.first.last
+
+					product_page = @ag.get(product_url)
+
+					product_page = Nokogiri::HTML(product_page.body, nil, Encoding::UTF_8.to_s)
+
+					product.description = product_page.css("#desc").text.strip
+				end
+
+				if aux = product_page.to_s.match('Atenção: Imagens meramente ilustrativas, o produto pode divergir da imagem apresentada')
+					product.description += ("\n" + aux[0])
+				end
+
+				product.print_info()
+
+				product_info_path = file_path("#{format_text(product.category)}/#{format_text(product.name)}/info.txt")
+
+				system("rm #{product_info_path}")
+
+				save_file(product_info_path, product.to_s)
+
+				product_json_path = file_path("#{format_text(product.category)}/#{format_text(product.name)}/info.json")
+
+				system("rm #{product_json_path}")
+
+				save_file(product_json_path, product.to_json)
+			end
+		end
+
+		aux = category_page.body.match(/\/categoria[^\?]+\?pagina=#{(current_page_number + 1).to_s}/)
+
+		if !there_are_still_more_pages(aux, current_page_number)
+			break
+		end
+
+		next_page_url = base_url() + aux[0]
+
+		category_page = @ag.get(next_page_url)
+
+		current_page_number += 1
+	end
+end
