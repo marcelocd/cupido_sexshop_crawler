@@ -1,5 +1,6 @@
 # cupido_sexshop_crawler
-This crawler accesses a specific sexshop web page and downloads its products images and main informations.
+This crawler accesses the following sexshop web page and downloads its products images and main informations:
+https://www.cupidodistribuidora.com.br/index.html
 
 The instructions bellow assume you're using Debian/Ubuntu.
 
